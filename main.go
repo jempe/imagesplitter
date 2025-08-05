@@ -212,7 +212,7 @@ func processImage(url string, imagesPrefix string) (ImageResponse, error) {
 
 	// Create a unique directory name based on timestamp
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
-	outputDir := filepath.Join(outputBaseDir, timestamp+"_"+filepath.Base(url))
+	outputDir := filepath.Join(outputBaseDir, timestamp)
 
 	// Create the directories
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
