@@ -105,7 +105,7 @@ func main() {
 		"file-path": cfg.filePath,
 	})
 
-	logger.PrintFatal(http.ListenAndServe(":8081", nil), nil)
+	logger.PrintFatal(http.ListenAndServe(":"+fmt.Sprintf("%d", cfg.port), nil), nil)
 }
 
 // basicAuth is a middleware that wraps an http.HandlerFunc with basic authentication
@@ -327,10 +327,12 @@ func processImage(url string, imagesPrefix string) (ImageResponse, error) {
 	// Get absolute path to zip file
 	absZipPath, _ := filepath.Abs(zipFileName)
 
+	relativeZipPath, _ := filepath.Rel(cfg.filePath, absZipPath)
+
 	return ImageResponse{
 		Status:  "success",
 		Message: fmt.Sprintf("Successfully split image into %d parts and created zip file", splitCount),
-		ZipURL:  absZipPath,
+		ZipURL:  relativeZipPath,
 	}, nil
 }
 
