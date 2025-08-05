@@ -32,7 +32,8 @@ type config struct {
 }
 
 type ImageRequest struct {
-	URL string `json:"url"`
+	URL          string `json:"url"`
+	ImagesPrefix string `json:"images_prefix"`
 }
 
 type ImageResponse struct {
@@ -138,7 +139,10 @@ func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 func handleSplitImage(w http.ResponseWriter, r *http.Request) {
 	// Only allow POST requests
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		errMessage := map[string]string{
+			"error": "Method not allowed",
+		}
+		apiResponse(w, http.StatusMethodNotAllowed, errMessage)
 		return
 	}
 
@@ -146,26 +150,63 @@ func handleSplitImage(w http.ResponseWriter, r *http.Request) {
 	var req ImageRequest
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		errMessage := map[string]string{
+			"error": "Invalid JSON",
+		}
+		apiResponse(w, http.StatusBadRequest, errMessage)
+		return
+	}
+
+	// Validate URL
+	if req.URL == "" {
+		errMessage := map[string]string{
+			"error": "URL is required",
+		}
+		apiResponse(w, http.StatusBadRequest, errMessage)
+		return
+	}
+
+	// Validate images_prefix
+	if req.ImagesPrefix == "" {
+		errMessage := map[string]string{
+			"error": "images_prefix is required",
+		}
+		apiResponse(w, http.StatusBadRequest, errMessage)
+		return
+	}
+
+	// Validate images_prefix contains only alphanumeric characters and underscores
+	if !containsOnlyAllowedChars(req.ImagesPrefix, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") {
+		errMessage := map[string]string{
+			"error": "images_prefix contains invalid characters",
+		}
+		apiResponse(w, http.StatusBadRequest, errMessage)
 		return
 	}
 
 	imageURL := cfg.urlHost + req.URL
 
 	// Download and process the image
-	result, err := processImage(imageURL)
+	result, err := processImage(imageURL, req.ImagesPrefix)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		errMessage := map[string]string{
+			"error": err.Error(),
+		}
+		apiResponse(w, http.StatusInternalServerError, errMessage)
 		return
 	}
 
 	// Return success response
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(result)
+	apiResponse(w, http.StatusOK, result)
 }
 
-func processImage(url string) (ImageResponse, error) {
+func apiResponse(w http.ResponseWriter, status int, message any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(message)
+}
+
+func processImage(url string, imagesPrefix string) (ImageResponse, error) {
 	// Create output directory for image processing
 	outputBaseDir := cfg.filePath
 
@@ -234,7 +275,7 @@ func processImage(url string) (ImageResponse, error) {
 		if fileNumber < 10 {
 			fileNumberStr = fmt.Sprintf("0%d", fileNumber)
 		}
-		outputPath := filepath.Join(outputDir, fmt.Sprintf("split_%s.jpg", fileNumberStr))
+		outputPath := filepath.Join(outputDir, fmt.Sprintf("%s_%s.jpg", imagesPrefix, fileNumberStr))
 		outFile, err := os.Create(outputPath)
 		if err != nil {
 			return ImageResponse{}, fmt.Errorf("failed to create output file: %v", err)
@@ -260,7 +301,7 @@ func processImage(url string) (ImageResponse, error) {
 	}
 
 	// Create a zip file containing all the split images
-	zipFileName := filepath.Join(outputDir, "split_images.zip")
+	zipFileName := filepath.Join(outputDir, fmt.Sprintf("%s.zip", imagesPrefix))
 	zipFile, err := os.Create(zipFileName)
 	if err != nil {
 		return ImageResponse{}, fmt.Errorf("failed to create zip file: %v", err)
@@ -315,6 +356,16 @@ func checkIfIsWritable(file string) bool {
 		return false
 	}
 	return fileInfo.Mode().Perm()&(1<<2) != 0
+}
+
+// containsOnlyAllowedChars checks if a string contains only characters from the allowed set
+func containsOnlyAllowedChars(s, allowed string) bool {
+	for _, char := range s {
+		if !strings.ContainsRune(allowed, char) {
+			return false
+		}
+	}
+	return true
 }
 
 // addFileToZip adds a file to a zip archive
