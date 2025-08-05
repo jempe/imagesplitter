@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -13,8 +14,11 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jempe/ImageSplitter/internal/jsonlog"
@@ -44,6 +48,7 @@ type ImageResponse struct {
 
 var logger *jsonlog.Logger
 var cfg config
+var wg sync.WaitGroup
 
 func main() {
 	logger = jsonlog.New(os.Stdout, jsonlog.LevelInfo)
@@ -105,7 +110,10 @@ func main() {
 		"file-path": cfg.filePath,
 	})
 
-	logger.PrintFatal(http.ListenAndServe(":"+fmt.Sprintf("%d", cfg.port), nil), nil)
+	err := serve()
+	if err != nil {
+		logger.PrintFatal(err, nil)
+	}
 }
 
 // basicAuth is a middleware that wraps an http.HandlerFunc with basic authentication
@@ -405,4 +413,62 @@ func addFileToZip(zipWriter *zip.Writer, filePath string) error {
 	// Copy file contents to the archive
 	_, err = io.Copy(writer, file)
 	return err
+}
+
+func serve() error {
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.port),
+		Handler:      nil,
+		IdleTimeout:  time.Minute,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+
+	shutdownError := make(chan error)
+
+	go func() {
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		s := <-quit
+
+		logger.PrintInfo("caught signal", map[string]string{
+			"signal": s.String(),
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		err := srv.Shutdown(ctx)
+		if err != nil {
+			shutdownError <- err
+		}
+
+		logger.PrintInfo("completing background tasks", map[string]string{
+			"addr": srv.Addr,
+		})
+
+		wg.Wait()
+		shutdownError <- nil
+	}()
+
+	logger.PrintInfo("starting server", map[string]string{
+		"addr": srv.Addr,
+	})
+
+	err := srv.ListenAndServe()
+	if !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+
+	err = <-shutdownError
+	if err != nil {
+		return err
+	}
+
+	logger.PrintInfo("stopped server", map[string]string{
+		"addr":    srv.Addr,
+		"version": version,
+	})
+
+	return nil
 }
