@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -106,8 +107,11 @@ func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Check if credentials are valid
-		if username != cfg.username || password != cfg.password {
+		// Check if credentials are valid using constant-time comparison to prevent timing attacks
+		usernameMatch := subtle.ConstantTimeCompare([]byte(username), []byte(cfg.username)) == 1
+		passwordMatch := subtle.ConstantTimeCompare([]byte(password), []byte(cfg.password)) == 1
+
+		if !usernameMatch || !passwordMatch {
 			// Invalid credentials, return 401 Unauthorized
 			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
