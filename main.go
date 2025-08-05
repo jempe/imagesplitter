@@ -21,7 +21,7 @@ const version = "1.0.0"
 
 type config struct {
 	port     int
-	basePath string
+	urlHost  string
 	filePath string
 }
 
@@ -38,17 +38,21 @@ func main() {
 	// API Web Server Settings
 	flag.IntVar(&cfg.port, "port", 4000, "API server port")
 
-	flag.StringVar(&cfg.basePath, "base-path", "", "Base path for image processing")
+	flag.StringVar(&cfg.urlHost, "url-host", "", "Base path for image processing")
 	flag.StringVar(&cfg.filePath, "file-path", "", "File path for image processing")
 
 	flag.Parse()
 
-	if cfg.basePath == "" {
-		logger.PrintFatal(errors.New("base path cannot be empty"), nil)
+	if cfg.urlHost == "" || cfg.filePath == "" {
+		logger.PrintFatal(errors.New("url host and file path cannot be empty"), nil)
 	}
 
-	if cfg.filePath == "" {
-		logger.PrintFatal(errors.New("file path cannot be empty"), nil)
+	if (strings.HasPrefix(cfg.urlHost, "http://") || strings.HasPrefix(cfg.urlHost, "https://")) == false {
+		logger.PrintFatal(errors.New("url host must start with http:// or https://"), nil)
+	}
+
+	if strings.HasSuffix(cfg.urlHost, "/") == false {
+		logger.PrintFatal(errors.New("url host must end with a slash"), nil)
 	}
 
 	if !(strings.HasSuffix(cfg.filePath, "/") && strings.HasPrefix(cfg.filePath, "/")) {
@@ -70,7 +74,7 @@ func main() {
 	http.HandleFunc("/split-image", handleSplitImage)
 	logger.PrintInfo("Starting server", map[string]string{
 		"port":      fmt.Sprintf("%d", cfg.port),
-		"base-path": cfg.basePath,
+		"url-host":  cfg.urlHost,
 		"file-path": cfg.filePath,
 	})
 
@@ -92,8 +96,10 @@ func handleSplitImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	imageURL := cfg.urlHost + req.URL
+
 	// Download and process the image
-	result, err := processImage(req.URL)
+	result, err := processImage(imageURL)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -110,7 +116,7 @@ func handleSplitImage(w http.ResponseWriter, r *http.Request) {
 
 func processImage(url string) (string, error) {
 	// Create output directory for image processing
-	outputBaseDir := "output_images"
+	outputBaseDir := cfg.filePath
 
 	// Create a unique directory name based on timestamp
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
@@ -171,7 +177,13 @@ func processImage(url string) (string, error) {
 		}
 
 		// Save the split image
-		outputPath := filepath.Join(outputDir, fmt.Sprintf("split_%d.jpg", i+1))
+		// Add leading zero for numbers less than 10
+		fileNumber := i + 1
+		fileNumberStr := fmt.Sprintf("%d", fileNumber)
+		if fileNumber < 10 {
+			fileNumberStr = fmt.Sprintf("0%d", fileNumber)
+		}
+		outputPath := filepath.Join(outputDir, fmt.Sprintf("split_%s.jpg", fileNumberStr))
 		outFile, err := os.Create(outputPath)
 		if err != nil {
 			return "", fmt.Errorf("failed to create output file: %v", err)
