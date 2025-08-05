@@ -21,11 +21,12 @@ import (
 const version = "1.0.0"
 
 type config struct {
-	port     int
-	urlHost  string
-	filePath string
-	username string
-	password string
+	port      int
+	urlHost   string
+	filePath  string
+	username  string
+	password  string
+	maxHeight int
 }
 
 type ImageRequest struct {
@@ -47,6 +48,9 @@ func main() {
 	// Authentication settings
 	flag.StringVar(&cfg.username, "username", "", "Username for basic authentication")
 	flag.StringVar(&cfg.password, "password", "", "Password for basic authentication")
+
+	// Image processing settings
+	flag.IntVar(&cfg.maxHeight, "max-height", 5000, "Maximum height for image processing")
 
 	flag.Parse()
 
@@ -197,7 +201,7 @@ func processImage(url string) (string, error) {
 	totalHeight := bounds.Max.Y
 
 	// Calculate number of splits needed
-	maxHeight := 5000
+	maxHeight := cfg.maxHeight
 	splitCount := (totalHeight + maxHeight - 1) / maxHeight // Ceiling division
 
 	// Output directory is already created
