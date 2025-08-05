@@ -14,8 +14,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -33,6 +35,7 @@ type config struct {
 	username  string
 	password  string
 	maxHeight int
+	useCLI    bool
 }
 
 type ImageRequest struct {
@@ -65,6 +68,9 @@ func main() {
 
 	// Image processing settings
 	flag.IntVar(&cfg.maxHeight, "max-height", 5000, "Maximum height for image processing")
+
+	// Implementation selection
+	flag.BoolVar(&cfg.useCLI, "use-cli", false, "Use command line tools (convert and zip) instead of Go implementation")
 
 	flag.Parse()
 
@@ -108,6 +114,7 @@ func main() {
 		"port":      fmt.Sprintf("%d", cfg.port),
 		"url-host":  cfg.urlHost,
 		"file-path": cfg.filePath,
+		"use-cli":   fmt.Sprintf("%t", cfg.useCLI),
 	})
 
 	err := serve()
@@ -227,24 +234,188 @@ func processImage(url string, imagesPrefix string) (ImageResponse, error) {
 		return ImageResponse{}, fmt.Errorf("failed to create output directory: %v", err)
 	}
 
-	// Store paths to split images
-	var chunkPaths []string
+	// Download the image to a temporary file
+	tempImagePath := filepath.Join(outputDir, "original_image")
+	// Determine file extension from URL
+	fileExt := ".jpg" // Default
+	if strings.HasSuffix(strings.ToLower(url), ".png") {
+		fileExt = ".png"
+	}
+	tempImagePath = tempImagePath + fileExt
 
+	// Download image
+	if err := downloadImage(url, tempImagePath); err != nil {
+		return ImageResponse{}, err
+	}
+
+	var result ImageResponse
+	var err error
+
+	// Choose implementation based on config
+	if cfg.useCLI {
+		// Use command line tools (convert and zip)
+		result, err = processImageWithCLI(tempImagePath, outputDir, imagesPrefix)
+	} else {
+		// Use Go implementation
+		result, err = processImageWithGo(tempImagePath, outputDir, imagesPrefix)
+	}
+
+	if err != nil {
+		return ImageResponse{}, err
+	}
+
+	return result, nil
+}
+
+// downloadImage downloads an image from a URL to a local file
+func downloadImage(url string, outputPath string) error {
 	// Download image using streaming
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return ImageResponse{}, fmt.Errorf("failed to create request: %v", err)
+		return fmt.Errorf("failed to create request: %v", err)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return ImageResponse{}, fmt.Errorf("failed to download image: %v", err)
+		return fmt.Errorf("failed to download image: %v", err)
 	}
 	defer resp.Body.Close()
 
-	// Read image
-	img, _, err := image.Decode(resp.Body)
+	// Create output file
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %v", err)
+	}
+	defer outFile.Close()
+
+	// Copy data from response to file
+	_, err = io.Copy(outFile, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to save image: %v", err)
+	}
+
+	return nil
+}
+
+// processImageWithGo processes an image using Go's image processing libraries
+// processImageWithCLI processes an image using command line tools (convert and zip)
+func processImageWithCLI(imagePath string, outputDir string, imagesPrefix string) (ImageResponse, error) {
+	// Store paths to split images
+	var chunkPaths []string
+
+	// Get image dimensions using ImageMagick's identify command
+	identifyCmd := exec.Command("identify", "-format", "%w %h", imagePath)
+	output, err := identifyCmd.CombinedOutput()
+	if err != nil {
+		return ImageResponse{}, fmt.Errorf("failed to get image dimensions: %v - %s", err, string(output))
+	}
+
+	// Parse dimensions
+	dimensions := strings.Split(strings.TrimSpace(string(output)), " ")
+	if len(dimensions) != 2 {
+		return ImageResponse{}, fmt.Errorf("unexpected output from identify command: %s", string(output))
+	}
+
+	width, err := strconv.Atoi(dimensions[0])
+	if err != nil {
+		return ImageResponse{}, fmt.Errorf("failed to parse image width: %v", err)
+	}
+
+	totalHeight, err := strconv.Atoi(dimensions[1])
+	if err != nil {
+		return ImageResponse{}, fmt.Errorf("failed to parse image height: %v", err)
+	}
+
+	// Calculate number of splits needed
+	maxHeight := cfg.maxHeight
+	splitCount := (totalHeight + maxHeight - 1) / maxHeight // Ceiling division
+
+	// Split the image using ImageMagick's convert command
+	for i := 0; i < splitCount; i++ {
+		startY := i * maxHeight
+		endY := startY + maxHeight
+		if endY > totalHeight {
+			endY = totalHeight
+		}
+
+		// Add leading zero for numbers less than 10
+		fileNumber := i + 1
+		fileNumberStr := fmt.Sprintf("%d", fileNumber)
+		if fileNumber < 10 {
+			fileNumberStr = fmt.Sprintf("0%d", fileNumber)
+		}
+
+		// Output path for this split
+		outputPath := filepath.Join(outputDir, fmt.Sprintf("%s_%s.jpg", imagesPrefix, fileNumberStr))
+
+		// Use convert to crop the image
+		cropHeight := endY - startY
+		convertCmd := exec.Command(
+			"convert",
+			imagePath,
+			"-crop", fmt.Sprintf("%dx%d+0+%d", width, cropHeight, startY),
+			outputPath,
+		)
+
+		output, err := convertCmd.CombinedOutput()
+		if err != nil {
+			return ImageResponse{}, fmt.Errorf("failed to split image: %v - %s", err, string(output))
+		}
+
+		// Add absolute path to response
+		absPath, _ := filepath.Abs(outputPath)
+		chunkPaths = append(chunkPaths, absPath)
+	}
+
+	// Create a zip file using the zip command
+	zipFileName := filepath.Join(outputDir, fmt.Sprintf("%s.zip", imagesPrefix))
+
+	// No need to change directories, we'll use absolute paths
+
+	// Create the zip command with all image files
+	zipArgs := []string{
+		"-j", // Store just the name of the file (junk the path)
+		zipFileName,
+	}
+
+	// Add all image paths to the zip command
+	for _, imagePath := range chunkPaths {
+		zipArgs = append(zipArgs, imagePath)
+	}
+
+	// Execute the zip command
+	zipCmd := exec.Command("zip", zipArgs...)
+	output, err = zipCmd.CombinedOutput()
+	if err != nil {
+		return ImageResponse{}, fmt.Errorf("failed to create zip file: %v - %s", err, string(output))
+	}
+
+	// Get absolute path to zip file
+	absZipPath, _ := filepath.Abs(zipFileName)
+
+	relativeZipPath, _ := filepath.Rel(cfg.filePath, absZipPath)
+
+	return ImageResponse{
+		Status:  "success",
+		Message: fmt.Sprintf("Successfully split image into %d parts and created zip file using CLI tools", splitCount),
+		ZipURL:  relativeZipPath,
+	}, nil
+}
+
+func processImageWithGo(imagePath string, outputDir string, imagesPrefix string) (ImageResponse, error) {
+	// Store paths to split images
+	var chunkPaths []string
+
+	// Open the image file
+	file, err := os.Open(imagePath)
+	if err != nil {
+		return ImageResponse{}, fmt.Errorf("failed to open image file: %v", err)
+	}
+	defer file.Close()
+
+	// Decode the image
+	img, _, err := image.Decode(file)
 	if err != nil {
 		return ImageResponse{}, fmt.Errorf("failed to decode image: %v", err)
 	}
@@ -257,8 +428,6 @@ func processImage(url string, imagesPrefix string) (ImageResponse, error) {
 	// Calculate number of splits needed
 	maxHeight := cfg.maxHeight
 	splitCount := (totalHeight + maxHeight - 1) / maxHeight // Ceiling division
-
-	// Output directory is already created
 
 	// Split the image
 	for i := 0; i < splitCount; i++ {
@@ -289,7 +458,7 @@ func processImage(url string, imagesPrefix string) (ImageResponse, error) {
 			return ImageResponse{}, fmt.Errorf("failed to create output file: %v", err)
 		}
 
-		if strings.HasSuffix(strings.ToLower(url), ".png") {
+		if strings.HasSuffix(strings.ToLower(imagePath), ".png") {
 			if err := png.Encode(outFile, subImg); err != nil {
 				outFile.Close()
 				return ImageResponse{}, fmt.Errorf("failed to save split image: %v", err)
