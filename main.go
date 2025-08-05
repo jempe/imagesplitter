@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,6 +33,12 @@ type config struct {
 
 type ImageRequest struct {
 	URL string `json:"url"`
+}
+
+type ImageResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	ZipURL  string `json:"zipUrl"`
 }
 
 var logger *jsonlog.Logger
@@ -154,13 +162,10 @@ func handleSplitImage(w http.ResponseWriter, r *http.Request) {
 	// Return success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "success",
-		"message": result,
-	})
+	json.NewEncoder(w).Encode(result)
 }
 
-func processImage(url string) (string, error) {
+func processImage(url string) (ImageResponse, error) {
 	// Create output directory for image processing
 	outputBaseDir := cfg.filePath
 
@@ -170,7 +175,7 @@ func processImage(url string) (string, error) {
 
 	// Create the directories
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create output directory: %v", err)
+		return ImageResponse{}, fmt.Errorf("failed to create output directory: %v", err)
 	}
 
 	// Store paths to split images
@@ -180,19 +185,19 @@ func processImage(url string) (string, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %v", err)
+		return ImageResponse{}, fmt.Errorf("failed to create request: %v", err)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to download image: %v", err)
+		return ImageResponse{}, fmt.Errorf("failed to download image: %v", err)
 	}
 	defer resp.Body.Close()
 
 	// Read image
 	img, _, err := image.Decode(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode image: %v", err)
+		return ImageResponse{}, fmt.Errorf("failed to decode image: %v", err)
 	}
 
 	// Get image dimensions
@@ -232,19 +237,19 @@ func processImage(url string) (string, error) {
 		outputPath := filepath.Join(outputDir, fmt.Sprintf("split_%s.jpg", fileNumberStr))
 		outFile, err := os.Create(outputPath)
 		if err != nil {
-			return "", fmt.Errorf("failed to create output file: %v", err)
+			return ImageResponse{}, fmt.Errorf("failed to create output file: %v", err)
 		}
 
 		if strings.HasSuffix(strings.ToLower(url), ".png") {
 			if err := png.Encode(outFile, subImg); err != nil {
 				outFile.Close()
-				return "", fmt.Errorf("failed to save split image: %v", err)
+				return ImageResponse{}, fmt.Errorf("failed to save split image: %v", err)
 			}
 		} else {
 			// Default to JPEG
 			if err := jpeg.Encode(outFile, subImg, &jpeg.Options{Quality: 90}); err != nil {
 				outFile.Close()
-				return "", fmt.Errorf("failed to save split image: %v", err)
+				return ImageResponse{}, fmt.Errorf("failed to save split image: %v", err)
 			}
 		}
 		outFile.Close()
@@ -254,13 +259,38 @@ func processImage(url string) (string, error) {
 		chunkPaths = append(chunkPaths, absPath)
 	}
 
-	// Create a formatted list of file paths
-	var fileList string
-	for i, path := range chunkPaths {
-		fileList += fmt.Sprintf("\n%d. %s", i+1, path)
+	// Create a zip file containing all the split images
+	zipFileName := filepath.Join(outputDir, "split_images.zip")
+	zipFile, err := os.Create(zipFileName)
+	if err != nil {
+		return ImageResponse{}, fmt.Errorf("failed to create zip file: %v", err)
+	}
+	defer zipFile.Close()
+
+	// Create a new zip archive
+	zipWriter := zip.NewWriter(zipFile)
+	defer zipWriter.Close()
+
+	// Add each split image to the zip file
+	for _, imagePath := range chunkPaths {
+		if err := addFileToZip(zipWriter, imagePath); err != nil {
+			return ImageResponse{}, fmt.Errorf("failed to add file to zip: %v", err)
+		}
 	}
 
-	return fmt.Sprintf("Successfully split image into %d parts.\nFiles saved in: %s%s", splitCount, outputDir, fileList), nil
+	// Close the zip writer before returning
+	if err := zipWriter.Close(); err != nil {
+		return ImageResponse{}, fmt.Errorf("failed to close zip writer: %v", err)
+	}
+
+	// Get absolute path to zip file
+	absZipPath, _ := filepath.Abs(zipFileName)
+
+	return ImageResponse{
+		Status:  "success",
+		Message: fmt.Sprintf("Successfully split image into %d parts and created zip file", splitCount),
+		ZipURL:  absZipPath,
+	}, nil
 }
 
 func checkIfFileExists(file string) bool {
@@ -285,4 +315,41 @@ func checkIfIsWritable(file string) bool {
 		return false
 	}
 	return fileInfo.Mode().Perm()&(1<<2) != 0
+}
+
+// addFileToZip adds a file to a zip archive
+func addFileToZip(zipWriter *zip.Writer, filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Get file information
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+
+	// Create a header for the file
+	header, err := zip.FileInfoHeader(info)
+	if err != nil {
+		return err
+	}
+
+	// Use base name of file as name in the archive
+	header.Name = filepath.Base(filePath)
+
+	// Set compression method
+	header.Method = zip.Deflate
+
+	// Create writer for the file in the archive
+	writer, err := zipWriter.CreateHeader(header)
+	if err != nil {
+		return err
+	}
+
+	// Copy file contents to the archive
+	_, err = io.Copy(writer, file)
+	return err
 }
