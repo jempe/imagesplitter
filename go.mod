@@ -1,3 +1,3 @@
-module image-splitter-api
+module github.com/jempe/ImageSplitter
 
 go 1.21

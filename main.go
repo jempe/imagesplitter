@@ -2,26 +2,79 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/jempe/ImageSplitter/internal/jsonlog"
 )
+
+const version = "1.0.0"
+
+type config struct {
+	port     int
+	basePath string
+	filePath string
+}
 
 type ImageRequest struct {
 	URL string `json:"url"`
 }
 
+var logger *jsonlog.Logger
+var cfg config
+
 func main() {
+	logger = jsonlog.New(os.Stdout, jsonlog.LevelInfo)
+
+	// API Web Server Settings
+	flag.IntVar(&cfg.port, "port", 4000, "API server port")
+
+	flag.StringVar(&cfg.basePath, "base-path", "", "Base path for image processing")
+	flag.StringVar(&cfg.filePath, "file-path", "", "File path for image processing")
+
+	flag.Parse()
+
+	if cfg.basePath == "" {
+		logger.PrintFatal(errors.New("base path cannot be empty"), nil)
+	}
+
+	if cfg.filePath == "" {
+		logger.PrintFatal(errors.New("file path cannot be empty"), nil)
+	}
+
+	if !(strings.HasSuffix(cfg.filePath, "/") && strings.HasPrefix(cfg.filePath, "/")) {
+		logger.PrintFatal(errors.New("file path must start and end with a slash"), nil)
+	}
+
+	if !checkIfFileExists(cfg.filePath) {
+		logger.PrintFatal(errors.New("file path does not exist"), nil)
+	}
+
+	if !checkIfIsDirectory(cfg.filePath) {
+		logger.PrintFatal(errors.New("file path is not a directory"), nil)
+	}
+
+	if !checkIfIsWritable(cfg.filePath) {
+		logger.PrintFatal(errors.New("file path is not writable"), nil)
+	}
+
 	http.HandleFunc("/split-image", handleSplitImage)
-	fmt.Println("Server started at http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8081", nil))
+	logger.PrintInfo("Starting server", map[string]string{
+		"port":      fmt.Sprintf("%d", cfg.port),
+		"base-path": cfg.basePath,
+		"file-path": cfg.filePath,
+	})
+
+	logger.PrintFatal(http.ListenAndServe(":8081", nil), nil)
 }
 
 func handleSplitImage(w http.ResponseWriter, r *http.Request) {
@@ -150,4 +203,28 @@ func processImage(url string) (string, error) {
 	}
 
 	return fmt.Sprintf("Successfully split image into %d parts.\nFiles saved in: %s%s", splitCount, outputDir, fileList), nil
+}
+
+func checkIfFileExists(file string) bool {
+	_, err := os.Stat(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	return true
+}
+
+func checkIfIsDirectory(file string) bool {
+	fileInfo, err := os.Stat(file)
+	if err != nil {
+		return false
+	}
+	return fileInfo.IsDir()
+}
+
+func checkIfIsWritable(file string) bool {
+	fileInfo, err := os.Stat(file)
+	if err != nil {
+		return false
+	}
+	return fileInfo.Mode().Perm()&(1<<2) != 0
 }
