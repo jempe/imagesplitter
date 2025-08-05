@@ -23,6 +23,8 @@ type config struct {
 	port     int
 	urlHost  string
 	filePath string
+	username string
+	password string
 }
 
 type ImageRequest struct {
@@ -40,6 +42,10 @@ func main() {
 
 	flag.StringVar(&cfg.urlHost, "url-host", "", "Base path for image processing")
 	flag.StringVar(&cfg.filePath, "file-path", "", "File path for image processing")
+
+	// Authentication settings
+	flag.StringVar(&cfg.username, "username", "", "Username for basic authentication")
+	flag.StringVar(&cfg.password, "password", "", "Password for basic authentication")
 
 	flag.Parse()
 
@@ -71,7 +77,14 @@ func main() {
 		logger.PrintFatal(errors.New("file path is not writable"), nil)
 	}
 
-	http.HandleFunc("/split-image", handleSplitImage)
+	// Wrap the handler with basic authentication if credentials are provided
+	if cfg.username != "" && cfg.password != "" {
+		logger.PrintInfo("Basic authentication enabled", nil)
+		http.HandleFunc("/split-image", basicAuth(handleSplitImage))
+	} else {
+		logger.PrintInfo("Basic authentication disabled", nil)
+		http.HandleFunc("/split-image", handleSplitImage)
+	}
 	logger.PrintInfo("Starting server", map[string]string{
 		"port":      fmt.Sprintf("%d", cfg.port),
 		"url-host":  cfg.urlHost,
@@ -79,6 +92,31 @@ func main() {
 	})
 
 	logger.PrintFatal(http.ListenAndServe(":8081", nil), nil)
+}
+
+// basicAuth is a middleware that wraps an http.HandlerFunc with basic authentication
+func basicAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Get credentials from the request header
+		username, password, ok := r.BasicAuth()
+		if !ok {
+			// No credentials provided, return 401 Unauthorized
+			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Check if credentials are valid
+		if username != cfg.username || password != cfg.password {
+			// Invalid credentials, return 401 Unauthorized
+			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Credentials are valid, call the next handler
+		next(w, r)
+	}
 }
 
 func handleSplitImage(w http.ResponseWriter, r *http.Request) {
