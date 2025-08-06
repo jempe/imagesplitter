@@ -41,6 +41,7 @@ type config struct {
 type ImageRequest struct {
 	URL          string `json:"url"`
 	ImagesPrefix string `json:"images_prefix"`
+	Width        int    `json:"width"`
 }
 
 type ImageResponse struct {
@@ -202,7 +203,7 @@ func handleSplitImage(w http.ResponseWriter, r *http.Request) {
 	imageURL := cfg.urlHost + req.URL
 
 	// Download and process the image
-	result, err := processImage(imageURL, req.ImagesPrefix)
+	result, err := processImage(imageURL, req.ImagesPrefix, req.Width)
 	if err != nil {
 		errMessage := map[string]string{
 			"error": err.Error(),
@@ -221,7 +222,7 @@ func apiResponse(w http.ResponseWriter, status int, message any) {
 	json.NewEncoder(w).Encode(message)
 }
 
-func processImage(url string, imagesPrefix string) (ImageResponse, error) {
+func processImage(url string, imagesPrefix string, width int) (ImageResponse, error) {
 	// Create output directory for image processing
 	outputBaseDir := cfg.filePath
 
@@ -263,10 +264,10 @@ func processImage(url string, imagesPrefix string) (ImageResponse, error) {
 	// Choose implementation based on config
 	if cfg.useCLI {
 		// Use command line tools (convert and zip)
-		result, err = processImageWithCLI(tempImagePath, outputDir, imagesPrefix)
+		result, err = processImageWithCLI(tempImagePath, outputDir, imagesPrefix, width)
 	} else {
 		// Use Go implementation
-		result, err = processImageWithGo(tempImagePath, outputDir, imagesPrefix)
+		result, err = processImageWithGo(tempImagePath, outputDir, imagesPrefix, width)
 	}
 
 	if err != nil {
@@ -339,7 +340,7 @@ func downloadImage(url string, outputPath string) error {
 
 // processImageWithGo processes an image using Go's image processing libraries
 // processImageWithCLI processes an image using command line tools (vips and zip)
-func processImageWithCLI(imagePath string, outputDir string, imagesPrefix string) (ImageResponse, error) {
+func processImageWithCLI(imagePath string, outputDir string, imagesPrefix string, requestedWidth int) (ImageResponse, error) {
 	// Store paths to split images
 	var chunkPaths []string
 
@@ -385,6 +386,14 @@ func processImageWithCLI(imagePath string, outputDir string, imagesPrefix string
 		return ImageResponse{}, fmt.Errorf("failed to parse image height: %v", err)
 	}
 
+	// Determine if we need to crop the width
+	originalWidth := width
+	cropWidth := false
+	if requestedWidth > 0 && originalWidth > requestedWidth {
+		width = requestedWidth
+		cropWidth = true
+	}
+
 	// Calculate number of splits needed
 	maxHeight := cfg.maxHeight
 	splitCount := (totalHeight + maxHeight - 1) / maxHeight // Ceiling division
@@ -409,13 +418,30 @@ func processImageWithCLI(imagePath string, outputDir string, imagesPrefix string
 
 		// Use vips to extract a region of the image
 		cropHeight := endY - startY
-		vipsCmd := exec.Command(
-			"vips", "crop",
-			imagePath,
-			outputPath,
-			"0", fmt.Sprintf("%d", startY),
-			fmt.Sprintf("%d", width), fmt.Sprintf("%d", cropHeight),
-		)
+
+		// Command arguments
+		var vipsCmd *exec.Cmd
+
+		if cropWidth {
+			// If we need to crop width, use extract area with centered x-offset
+			xOffset := 0 //(width - requestedWidth) / 2
+			vipsCmd = exec.Command(
+				"vips", "crop",
+				imagePath,
+				outputPath,
+				fmt.Sprintf("%d", xOffset), fmt.Sprintf("%d", startY),
+				fmt.Sprintf("%d", requestedWidth), fmt.Sprintf("%d", cropHeight),
+			)
+		} else {
+			// Use original width
+			vipsCmd = exec.Command(
+				"vips", "crop",
+				imagePath,
+				outputPath,
+				"0", fmt.Sprintf("%d", startY),
+				fmt.Sprintf("%d", width), fmt.Sprintf("%d", cropHeight),
+			)
+		}
 
 		output, err := vipsCmd.CombinedOutput()
 		if err != nil {
@@ -462,7 +488,7 @@ func processImageWithCLI(imagePath string, outputDir string, imagesPrefix string
 	}, nil
 }
 
-func processImageWithGo(imagePath string, outputDir string, imagesPrefix string) (ImageResponse, error) {
+func processImageWithGo(imagePath string, outputDir string, imagesPrefix string, requestedWidth int) (ImageResponse, error) {
 	// Store paths to split images
 	var chunkPaths []string
 
@@ -481,8 +507,16 @@ func processImageWithGo(imagePath string, outputDir string, imagesPrefix string)
 
 	// Get image dimensions
 	bounds := img.Bounds()
-	width := bounds.Max.X
+	originalWidth := bounds.Max.X
 	totalHeight := bounds.Max.Y
+
+	// Determine if we need to crop the width
+	width := originalWidth
+	cropWidth := false
+	if requestedWidth > 0 && originalWidth > requestedWidth {
+		width = requestedWidth
+		cropWidth = true
+	}
 
 	// Calculate number of splits needed
 	maxHeight := cfg.maxHeight
@@ -500,7 +534,14 @@ func processImageWithGo(imagePath string, outputDir string, imagesPrefix string)
 		subImg := image.NewRGBA(image.Rect(0, 0, width, endY-startY))
 		for y := startY; y < endY; y++ {
 			for x := 0; x < width; x++ {
-				subImg.Set(x, y-startY, img.At(x, y))
+				// If cropping width, center the image horizontally
+				srcX := x
+				if cropWidth {
+					// Calculate offset to center the cropped area
+					offset := 0 //(originalWidth - width) / 2
+					srcX = x + offset
+				}
+				subImg.Set(x, y-startY, img.At(srcX, y))
 			}
 		}
 
