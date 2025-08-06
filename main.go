@@ -70,7 +70,7 @@ func main() {
 	flag.IntVar(&cfg.maxHeight, "max-height", 5000, "Maximum height for image processing")
 
 	// Implementation selection
-	flag.BoolVar(&cfg.useCLI, "use-cli", false, "Use command line tools (convert and zip) instead of Go implementation")
+	flag.BoolVar(&cfg.useCLI, "use-cli", false, "Use command line tools (vips and zip) instead of Go implementation")
 
 	flag.Parse()
 
@@ -243,9 +243,18 @@ func processImage(url string, imagesPrefix string) (ImageResponse, error) {
 	}
 	tempImagePath = tempImagePath + fileExt
 
-	// Download image
-	if err := downloadImage(url, tempImagePath); err != nil {
-		return ImageResponse{}, err
+	// Download image using appropriate method based on config
+	var downloadErr error
+	if cfg.useCLI {
+		// Use curl for CLI mode
+		downloadErr = downloadImageWithCurl(url, tempImagePath)
+	} else {
+		// Use Go's HTTP client for Go mode
+		downloadErr = downloadImage(url, tempImagePath)
+	}
+
+	if downloadErr != nil {
+		return ImageResponse{}, downloadErr
 	}
 
 	var result ImageResponse
@@ -265,6 +274,36 @@ func processImage(url string, imagesPrefix string) (ImageResponse, error) {
 	}
 
 	return result, nil
+}
+
+// downloadImageWithCurl downloads an image from a URL to a local file using curl
+func downloadImageWithCurl(url string, outputPath string) error {
+	// Use curl to download the image
+	curlCmd := exec.Command(
+		"curl",
+		"--silent",             // Don't show progress meter or error messages
+		"--show-error",         // Show error messages
+		"--fail",               // Fail silently on server errors
+		"--output", outputPath, // Output to file
+		url,
+	)
+
+	output, err := curlCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to download image with curl: %v - %s", err, string(output))
+	}
+
+	// Check if file exists and has content
+	fileInfo, err := os.Stat(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to verify downloaded file: %v", err)
+	}
+
+	if fileInfo.Size() == 0 {
+		return fmt.Errorf("downloaded file is empty")
+	}
+
+	return nil
 }
 
 // downloadImage downloads an image from a URL to a local file
@@ -299,22 +338,41 @@ func downloadImage(url string, outputPath string) error {
 }
 
 // processImageWithGo processes an image using Go's image processing libraries
-// processImageWithCLI processes an image using command line tools (convert and zip)
+// processImageWithCLI processes an image using command line tools (vips and zip)
 func processImageWithCLI(imagePath string, outputDir string, imagesPrefix string) (ImageResponse, error) {
 	// Store paths to split images
 	var chunkPaths []string
 
-	// Get image dimensions using ImageMagick's identify command
-	identifyCmd := exec.Command("identify", "-format", "%w %h", imagePath)
-	output, err := identifyCmd.CombinedOutput()
+	// Get image dimensions using vips
+	vipsInfoCmd := exec.Command("vipsheader", imagePath)
+	output, err := vipsInfoCmd.CombinedOutput()
 	if err != nil {
 		return ImageResponse{}, fmt.Errorf("failed to get image dimensions: %v - %s", err, string(output))
 	}
 
-	// Parse dimensions
-	dimensions := strings.Split(strings.TrimSpace(string(output)), " ")
+	// Parse dimensions from vipsheader output
+	// Format example: "cteam_01.jpg: 1170x5000 uchar, 3 bands, srgb, jpegload"
+	outputStr := strings.TrimSpace(string(output))
+
+	// Split by colon
+	parts := strings.Split(outputStr, ":")
+	if len(parts) < 2 {
+		return ImageResponse{}, fmt.Errorf("unexpected output format from vipsheader: %s", outputStr)
+	}
+
+	// Get the part after the colon and trim spaces
+	dimensionPart := strings.TrimSpace(parts[1])
+
+	// Split by space to get the dimensions (first token)
+	dimensionTokens := strings.Split(dimensionPart, " ")
+	if len(dimensionTokens) < 1 {
+		return ImageResponse{}, fmt.Errorf("unexpected dimension format from vipsheader: %s", dimensionPart)
+	}
+
+	// Split the dimensions by 'x'
+	dimensions := strings.Split(dimensionTokens[0], "x")
 	if len(dimensions) != 2 {
-		return ImageResponse{}, fmt.Errorf("unexpected output from identify command: %s", string(output))
+		return ImageResponse{}, fmt.Errorf("unexpected dimension format from vipsheader: %s", dimensionTokens[0])
 	}
 
 	width, err := strconv.Atoi(dimensions[0])
@@ -331,7 +389,7 @@ func processImageWithCLI(imagePath string, outputDir string, imagesPrefix string
 	maxHeight := cfg.maxHeight
 	splitCount := (totalHeight + maxHeight - 1) / maxHeight // Ceiling division
 
-	// Split the image using ImageMagick's convert command
+	// Split the image using vips
 	for i := 0; i < splitCount; i++ {
 		startY := i * maxHeight
 		endY := startY + maxHeight
@@ -349,16 +407,17 @@ func processImageWithCLI(imagePath string, outputDir string, imagesPrefix string
 		// Output path for this split
 		outputPath := filepath.Join(outputDir, fmt.Sprintf("%s_%s.jpg", imagesPrefix, fileNumberStr))
 
-		// Use convert to crop the image
+		// Use vips to extract a region of the image
 		cropHeight := endY - startY
-		convertCmd := exec.Command(
-			"convert",
+		vipsCmd := exec.Command(
+			"vips", "crop",
 			imagePath,
-			"-crop", fmt.Sprintf("%dx%d+0+%d", width, cropHeight, startY),
 			outputPath,
+			"0", fmt.Sprintf("%d", startY),
+			fmt.Sprintf("%d", width), fmt.Sprintf("%d", cropHeight),
 		)
 
-		output, err := convertCmd.CombinedOutput()
+		output, err := vipsCmd.CombinedOutput()
 		if err != nil {
 			return ImageResponse{}, fmt.Errorf("failed to split image: %v - %s", err, string(output))
 		}
