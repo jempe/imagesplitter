@@ -45,9 +45,10 @@ type ImageRequest struct {
 }
 
 type ImageResponse struct {
-	Status  string `json:"status"`
-	Message string `json:"message"`
-	ZipURL  string `json:"zipUrl"`
+	Status  string   `json:"status"`
+	Message string   `json:"message"`
+	ZipURL  string   `json:"zipUrl"`
+	Images  []string `json:"images"`
 }
 
 var logger *jsonlog.Logger
@@ -464,9 +465,14 @@ func processImageWithCLI(imagePath string, outputDir string, imagesPrefix string
 		zipFileName,
 	}
 
+	images := []string{}
+
 	// Add all image paths to the zip command
 	for _, imagePath := range chunkPaths {
 		zipArgs = append(zipArgs, imagePath)
+
+		imageRelPath, _ := filepath.Rel(cfg.filePath, imagePath)
+		images = append(images, imageRelPath)
 	}
 
 	// Execute the zip command
@@ -485,6 +491,7 @@ func processImageWithCLI(imagePath string, outputDir string, imagesPrefix string
 		Status:  "success",
 		Message: fmt.Sprintf("Successfully split image into %d parts and created zip file using CLI tools", splitCount),
 		ZipURL:  relativeZipPath,
+		Images:  images,
 	}, nil
 }
 
@@ -589,11 +596,16 @@ func processImageWithGo(imagePath string, outputDir string, imagesPrefix string,
 	zipWriter := zip.NewWriter(zipFile)
 	defer zipWriter.Close()
 
+	images := []string{}
+
 	// Add each split image to the zip file
 	for _, imagePath := range chunkPaths {
 		if err := addFileToZip(zipWriter, imagePath); err != nil {
 			return ImageResponse{}, fmt.Errorf("failed to add file to zip: %v", err)
 		}
+
+		imageRelPath, _ := filepath.Rel(cfg.filePath, imagePath)
+		images = append(images, imageRelPath)
 	}
 
 	// Close the zip writer before returning
@@ -610,6 +622,7 @@ func processImageWithGo(imagePath string, outputDir string, imagesPrefix string,
 		Status:  "success",
 		Message: fmt.Sprintf("Successfully split image into %d parts and created zip file", splitCount),
 		ZipURL:  relativeZipPath,
+		Images:  images,
 	}, nil
 }
 
