@@ -1,6 +1,6 @@
-# ImageSplitter
+# imagesplitter
 
-ImageSplitter is a Go-based web service that splits large images into smaller chunks and provides them as a downloadable ZIP file. This is particularly useful for processing very tall images that need to be divided into manageable pieces.
+imagesplitter is a Go-based web service that splits large images into smaller chunks and provides them as a downloadable ZIP file. This is particularly useful for processing very tall images that need to be divided into manageable pieces.
 
 ## Features
 
@@ -21,8 +21,8 @@ ImageSplitter is a Go-based web service that splits large images into smaller ch
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/jempe/ImageSplitter.git
-   cd ImageSplitter
+   git clone https://github.com/jempe/imagesplitter.git
+   cd imagesplitter
    ```
 
 2. Build the application:
