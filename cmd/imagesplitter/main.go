@@ -36,6 +36,7 @@ type ImageRequest struct {
 	ImagesPrefix string `json:"images_prefix"`
 	Width        int    `json:"width"`
 	MaxImages    int    `json:"max_images"`
+	CreateZip    bool   `json:"create_zip"`
 }
 
 var logger *jsonlog.Logger
@@ -197,7 +198,7 @@ func handleSplitImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Download and process the image
-	result, err := processor.ProcessImage(imageURL, req.ImagesPrefix, req.Width, req.MaxImages)
+	result, err := processor.ProcessImage(imageURL, req.ImagesPrefix, req.Width, req.MaxImages, req.CreateZip)
 	if err != nil {
 		errMessage := map[string]string{
 			"error": err.Error(),

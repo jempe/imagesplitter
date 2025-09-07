@@ -25,11 +25,11 @@ type Processor struct {
 type ImageResponse struct {
 	Status  string   `json:"status"`
 	Message string   `json:"message"`
-	ZipURL  string   `json:"zipUrl"`
+	ZipURL  string   `json:"zip_url"`
 	Images  []string `json:"images"`
 }
 
-func (p *Processor) ProcessImage(url string, imagesPrefix string, width int, maxImages int) (ImageResponse, error) {
+func (p *Processor) ProcessImage(url string, imagesPrefix string, width int, maxImages int, createZip bool) (ImageResponse, error) {
 	// Create output directory for image processing
 	outputBaseDir := p.OutputBaseDir
 
@@ -71,10 +71,10 @@ func (p *Processor) ProcessImage(url string, imagesPrefix string, width int, max
 	// Choose implementation based on config
 	if p.UseCLI {
 		// Use command line tools (convert and zip)
-		result, err = p.processImageWithCLI(tempImagePath, outputDir, imagesPrefix, width, maxImages)
+		result, err = p.processImageWithCLI(tempImagePath, outputDir, imagesPrefix, width, maxImages, createZip)
 	} else {
 		// Use Go implementation
-		result, err = p.processImageWithGo(tempImagePath, outputDir, imagesPrefix, width, maxImages)
+		result, err = p.processImageWithGo(tempImagePath, outputDir, imagesPrefix, width, maxImages, createZip)
 	}
 
 	if err != nil {
@@ -147,7 +147,7 @@ func downloadImage(url string, outputPath string) error {
 
 // processImageWithGo processes an image using Go's image processing libraries
 // processImageWithCLI processes an image using command line tools (vips and zip)
-func (p *Processor) processImageWithCLI(imagePath string, outputDir string, imagesPrefix string, requestedWidth int, maxImages int) (ImageResponse, error) {
+func (p *Processor) processImageWithCLI(imagePath string, outputDir string, imagesPrefix string, requestedWidth int, maxImages int, createZip bool) (ImageResponse, error) {
 	// Store paths to split images
 	var chunkPaths []string
 
@@ -287,10 +287,12 @@ func (p *Processor) processImageWithCLI(imagePath string, outputDir string, imag
 	}
 
 	// Execute the zip command
-	zipCmd := exec.Command("zip", zipArgs...)
-	output, err = zipCmd.CombinedOutput()
-	if err != nil {
-		return ImageResponse{}, fmt.Errorf("failed to create zip file: %v - %s", err, string(output))
+	if createZip {
+		zipCmd := exec.Command("zip", zipArgs...)
+		output, err := zipCmd.CombinedOutput()
+		if err != nil {
+			return ImageResponse{}, fmt.Errorf("failed to create zip file: %v - %s", err, string(output))
+		}
 	}
 
 	// Get absolute path to zip file
@@ -306,7 +308,7 @@ func (p *Processor) processImageWithCLI(imagePath string, outputDir string, imag
 	}, nil
 }
 
-func (p *Processor) processImageWithGo(imagePath string, outputDir string, imagesPrefix string, requestedWidth int, maxImages int) (ImageResponse, error) {
+func (p *Processor) processImageWithGo(imagePath string, outputDir string, imagesPrefix string, requestedWidth int, maxImages int, createZip bool) (ImageResponse, error) {
 	// Store paths to split images
 	var chunkPaths []string
 
@@ -402,31 +404,33 @@ func (p *Processor) processImageWithGo(imagePath string, outputDir string, image
 
 	// Create a zip file containing all the split images
 	zipFileName := filepath.Join(outputDir, fmt.Sprintf("%s.zip", imagesPrefix))
-	zipFile, err := os.Create(zipFileName)
-	if err != nil {
-		return ImageResponse{}, fmt.Errorf("failed to create zip file: %v", err)
-	}
-	defer zipFile.Close()
+	if createZip {
+		zipFile, err := os.Create(zipFileName)
+		if err != nil {
+			return ImageResponse{}, fmt.Errorf("failed to create zip file: %v", err)
+		}
+		defer zipFile.Close()
 
-	// Create a new zip archive
-	zipWriter := zip.NewWriter(zipFile)
-	defer zipWriter.Close()
+		// Create a new zip archive
+		zipWriter := zip.NewWriter(zipFile)
+		defer zipWriter.Close()
 
-	images := []string{}
+		images := []string{}
 
-	// Add each split image to the zip file
-	for _, imagePath := range chunkPaths {
-		if err := addFileToZip(zipWriter, imagePath); err != nil {
-			return ImageResponse{}, fmt.Errorf("failed to add file to zip: %v", err)
+		// Add each split image to the zip file
+		for _, imagePath := range chunkPaths {
+			if err := addFileToZip(zipWriter, imagePath); err != nil {
+				return ImageResponse{}, fmt.Errorf("failed to add file to zip: %v", err)
+			}
+
+			imageRelPath, _ := filepath.Rel(p.OutputBaseDir, imagePath)
+			images = append(images, imageRelPath)
 		}
 
-		imageRelPath, _ := filepath.Rel(p.OutputBaseDir, imagePath)
-		images = append(images, imageRelPath)
-	}
-
-	// Close the zip writer before returning
-	if err := zipWriter.Close(); err != nil {
-		return ImageResponse{}, fmt.Errorf("failed to close zip writer: %v", err)
+		// Close the zip writer before returning
+		if err := zipWriter.Close(); err != nil {
+			return ImageResponse{}, fmt.Errorf("failed to close zip writer: %v", err)
+		}
 	}
 
 	// Get absolute path to zip file
@@ -438,7 +442,7 @@ func (p *Processor) processImageWithGo(imagePath string, outputDir string, image
 		Status:  "success",
 		Message: fmt.Sprintf("Successfully split image into %d parts and created zip file", splitCount),
 		ZipURL:  relativeZipPath,
-		Images:  images,
+		Images:  chunkPaths,
 	}, nil
 }
 
