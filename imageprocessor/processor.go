@@ -29,7 +29,7 @@ type ImageResponse struct {
 	Images  []string `json:"images"`
 }
 
-func (p *Processor) ProcessImage(url string, imagesPrefix string, width int) (ImageResponse, error) {
+func (p *Processor) ProcessImage(url string, imagesPrefix string, width int, maxImages int) (ImageResponse, error) {
 	// Create output directory for image processing
 	outputBaseDir := p.OutputBaseDir
 
@@ -71,10 +71,10 @@ func (p *Processor) ProcessImage(url string, imagesPrefix string, width int) (Im
 	// Choose implementation based on config
 	if p.UseCLI {
 		// Use command line tools (convert and zip)
-		result, err = p.processImageWithCLI(tempImagePath, outputDir, imagesPrefix, width)
+		result, err = p.processImageWithCLI(tempImagePath, outputDir, imagesPrefix, width, maxImages)
 	} else {
 		// Use Go implementation
-		result, err = p.processImageWithGo(tempImagePath, outputDir, imagesPrefix, width)
+		result, err = p.processImageWithGo(tempImagePath, outputDir, imagesPrefix, width, maxImages)
 	}
 
 	if err != nil {
@@ -147,7 +147,7 @@ func downloadImage(url string, outputPath string) error {
 
 // processImageWithGo processes an image using Go's image processing libraries
 // processImageWithCLI processes an image using command line tools (vips and zip)
-func (p *Processor) processImageWithCLI(imagePath string, outputDir string, imagesPrefix string, requestedWidth int) (ImageResponse, error) {
+func (p *Processor) processImageWithCLI(imagePath string, outputDir string, imagesPrefix string, requestedWidth int, maxImages int) (ImageResponse, error) {
 	// Store paths to split images
 	var chunkPaths []string
 
@@ -204,6 +204,11 @@ func (p *Processor) processImageWithCLI(imagePath string, outputDir string, imag
 	// Calculate number of splits needed
 	maxHeight := p.MaxHeight
 	splitCount := (totalHeight + maxHeight - 1) / maxHeight // Ceiling division
+
+	// Limit the number of images
+	if maxImages > 0 && splitCount > maxImages {
+		splitCount = maxImages
+	}
 
 	// Split the image using vips
 	for i := 0; i < splitCount; i++ {
@@ -301,7 +306,7 @@ func (p *Processor) processImageWithCLI(imagePath string, outputDir string, imag
 	}, nil
 }
 
-func (p *Processor) processImageWithGo(imagePath string, outputDir string, imagesPrefix string, requestedWidth int) (ImageResponse, error) {
+func (p *Processor) processImageWithGo(imagePath string, outputDir string, imagesPrefix string, requestedWidth int, maxImages int) (ImageResponse, error) {
 	// Store paths to split images
 	var chunkPaths []string
 
@@ -334,6 +339,11 @@ func (p *Processor) processImageWithGo(imagePath string, outputDir string, image
 	// Calculate number of splits needed
 	maxHeight := p.MaxHeight
 	splitCount := (totalHeight + maxHeight - 1) / maxHeight // Ceiling division
+
+	// Limit the number of images
+	if maxImages > 0 && splitCount > maxImages {
+		splitCount = maxImages
+	}
 
 	// Split the image
 	for i := 0; i < splitCount; i++ {

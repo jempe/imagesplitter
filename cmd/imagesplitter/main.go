@@ -35,6 +35,7 @@ type ImageRequest struct {
 	URL          string `json:"url"`
 	ImagesPrefix string `json:"images_prefix"`
 	Width        int    `json:"width"`
+	MaxImages    int    `json:"max_images"`
 }
 
 var logger *jsonlog.Logger
@@ -169,10 +170,10 @@ func handleSplitImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate images_prefix
-	if req.ImagesPrefix == "" {
+	// Validate max_images
+	if req.MaxImages < 0 {
 		errMessage := map[string]string{
-			"error": "images_prefix is required",
+			"error": "max_images must be a positive integer",
 		}
 		apiResponse(w, http.StatusBadRequest, errMessage)
 		return
@@ -196,7 +197,7 @@ func handleSplitImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Download and process the image
-	result, err := processor.ProcessImage(imageURL, req.ImagesPrefix, req.Width)
+	result, err := processor.ProcessImage(imageURL, req.ImagesPrefix, req.Width, req.MaxImages)
 	if err != nil {
 		errMessage := map[string]string{
 			"error": err.Error(),
