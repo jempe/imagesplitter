@@ -82,7 +82,7 @@ func (p *Processor) ProcessImage(url string, imagesPrefix string, width int, max
 		return ImageResponse{}, err
 	}
 
-	result.OriginalImage = timestamp + "/original_image." + fileExt
+	result.OriginalImage = timestamp + "/original_image" + fileExt
 
 	return result, nil
 }
