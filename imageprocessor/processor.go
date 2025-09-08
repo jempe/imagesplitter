@@ -23,10 +23,11 @@ type Processor struct {
 }
 
 type ImageResponse struct {
-	Status  string   `json:"status"`
-	Message string   `json:"message"`
-	ZipURL  string   `json:"zip_url"`
-	Images  []string `json:"images"`
+	Status        string   `json:"status"`
+	Message       string   `json:"message"`
+	ZipURL        string   `json:"zip_url"`
+	Images        []string `json:"images"`
+	OriginalImage string   `json:"original_image"`
 }
 
 func (p *Processor) ProcessImage(url string, imagesPrefix string, width int, maxImages int, createZip bool) (ImageResponse, error) {
@@ -80,6 +81,8 @@ func (p *Processor) ProcessImage(url string, imagesPrefix string, width int, max
 	if err != nil {
 		return ImageResponse{}, err
 	}
+
+	result.OriginalImage = timestamp + "/original_image." + fileExt
 
 	return result, nil
 }
